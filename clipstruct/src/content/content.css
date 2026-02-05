@@ -1,0 +1,349 @@
+.clipstruct-container {
+  position: fixed;
+  top: 100px;
+  right: 20px;
+  z-index: 9999;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+}
+
+.clipstruct-panel {
+  width: 350px;
+  background-color: rgba(255, 255, 255, 0.95);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+
+.clipstruct-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background-color: #f0f0f0;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.clipstruct-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.header-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.edit-button {
+  background-color: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #333;
+  transition: all 0.2s ease;
+}
+
+.edit-button:hover {
+  background-color: #e0e0e0;
+}
+
+.edit-button.edit-mode {
+  background-color: #4CAF50;
+  color: white;
+  border-color: #4CAF50;
+}
+
+.edit-button.edit-mode:hover {
+  background-color: #45a049;
+}
+
+.clipstruct-toggle {
+  background: none;
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+  color: #666;
+  padding: 2px;
+  border-radius: 2px;
+}
+
+.clipstruct-toggle:hover {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+.clipstruct-content {
+  padding: 16px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.loading {
+  text-align: center;
+  color: #666;
+  padding: 20px 0;
+}
+
+.error {
+  text-align: center;
+  color: #d32f2f;
+  padding: 20px 0;
+}
+
+.no-captions {
+  text-align: center;
+  color: #666;
+  padding: 20px 0;
+}
+
+.captions-list h4 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+}
+
+.caption-item {
+  display: flex;
+  margin-bottom: 8px;
+  padding: 6px;
+  border-radius: 4px;
+  background-color: #f9f9f9;
+}
+
+.caption-time {
+  font-size: 10px;
+  color: #666;
+  width: 50px;
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+
+.caption-text {
+  font-size: 12px;
+  color: #333;
+  flex: 1;
+  line-height: 1.3;
+}
+
+.caption-more {
+  text-align: center;
+  font-size: 10px;
+  color: #666;
+  margin-top: 8px;
+  font-style: italic;
+}
+
+/* 结构分析样式 */
+.structure-analysis {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.segments-list {
+  margin-top: 12px;
+}
+
+.segment-item {
+  margin-bottom: 10px;
+  padding: 8px;
+  border-radius: 6px;
+  background-color: #f5f5f5;
+}
+
+.segment-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.segment-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  flex: 1;
+}
+
+.segment-title-edit input {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  padding: 4px 6px;
+  border: 1px solid #2196F3;
+  border-radius: 4px;
+  width: 150px;
+  background-color: white;
+}
+
+.segment-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.segment-time {
+  font-size: 10px;
+  color: #666;
+  white-space: nowrap;
+}
+
+.segment-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.segment-action-button {
+  background: none;
+  border: none;
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.segment-action-button:hover {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+.segment-action-button.edit:hover {
+  background-color: rgba(33, 150, 243, 0.1);
+}
+
+.segment-action-button.delete:hover {
+  background-color: rgba(244, 67, 54, 0.1);
+}
+
+/* 添加新结构段样式 */
+.add-segment-container {
+  margin-top: 12px;
+}
+
+.add-segment-button {
+  width: 100%;
+  padding: 8px;
+  background-color: #e3f2fd;
+  border: 1px dashed #2196F3;
+  border-radius: 6px;
+  color: #2196F3;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.add-segment-button:hover {
+  background-color: #bbdefb;
+  border-style: solid;
+}
+
+.segment-duration {
+  width: 100%;
+  height: 4px;
+  background-color: #e0e0e0;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.duration-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.segment-introduction .duration-fill {
+  background-color: #4CAF50;
+}
+
+.segment-main .duration-fill {
+  background-color: #2196F3;
+}
+
+.segment-conclusion .duration-fill {
+  background-color: #FF9800;
+}
+
+.segment-current {
+  background-color: #e3f2fd !important;
+  border: 1px solid #2196F3;
+}
+
+.segment-item {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.segment-item:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* 时间指示器 */
+.duration-bar {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  background-color: #e0e0e0;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.current-time-indicator {
+  position: absolute;
+  top: -3px;
+  width: 10px;
+  height: 10px;
+  background-color: #ff5722;
+  border-radius: 50%;
+  transform: translateX(-50%);
+  box-shadow: 0 0 0 2px rgba(255, 87, 34, 0.3);
+}
+
+.no-structure {
+  text-align: center;
+  color: #666;
+  padding: 10px 0;
+  font-style: italic;
+}
+
+/* 滚动条样式 */
+.clipstruct-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.clipstruct-content::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 3px;
+}
+
+.clipstruct-content::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 3px;
+}
+
+.clipstruct-content::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .clipstruct-container {
+    right: 10px;
+    top: 80px;
+  }
+  
+  .clipstruct-panel {
+    width: 300px;
+  }
+}
