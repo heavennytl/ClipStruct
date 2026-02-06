@@ -10,6 +10,7 @@ function ClipStructApp() {
   const [isEditing, setIsEditing] = useState(false);
   const [editingSegmentId, setEditingSegmentId] = useState(null);
   const [editingTitle, setEditingTitle] = useState('');
+  const [editingIntent, setEditingIntent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [videoId, setVideoId] = useState('');
@@ -230,23 +231,56 @@ function ClipStructApp() {
     return processed;
   };
 
-  // 规则引擎结构分段
+  // 规则引擎结构分段（7 类结构类型）
   const analyzeStructure = (captions) => {
     const segments = [];
     let currentSegment = null;
+    const videoDuration = captions.length > 0 ? captions[captions.length - 1].start + captions[captions.length - 1].duration : 0;
 
-    // 结构类型关键词
+    // 结构类型关键词（按 PRD 要求：7 类）
     const structureKeywords = {
-      introduction: ['介绍', '今天', '我们', '要', '讲', '分享', '开始', 'hello', 'hi', 'welcome', 'today', 'we', 'are', 'going', 'to', 'let', 'me', 'start'],
-      main: ['主要', '核心', '重点', '首先', '其次', '然后', '接下来', 'first', 'second', 'then', 'next', 'now', 'moving', 'on'],
-      conclusion: ['总结', '最后', '总之', '所以', '感谢', '再见', 'summary', 'finally', 'in', 'conclusion', 'thank', 'you', 'goodbye']
+      hook: ['imagine', 'what if', 'here\'s the thing', 'let me tell you', 'today we\'re going to', 'have you ever', 'you won\'t believe', 'the secret is', '想象', '如果', '你知道吗', '今天我们要', '秘密'],
+      background: ['background', 'context', 'story', 'experience', 'when i was', 'a few years ago', 'recently', 'in the past', 'the problem was', '背景', '故事', '经历', '几年前', '过去', '问题'],
+      corePoint: ['the key point', 'the main idea', 'here\'s why', 'the reason is', 'most importantly', 'the truth is', 'actually', '核心', '关键', '重点', '原因', '最重要的是', '真相', '实际上'],
+      example: ['for example', 'for instance', 'let\'s take', 'case study', 'like', 'such as', 'imagine if', 'think about', '例如', '比如', '举个例子', '案例', '就像', '想象一下'],
+      transition: ['but', 'however', 'now', 'moving on', 'next', 'then', 'so', 'therefore', 'thus', 'in conclusion', '但是', '然而', '现在', '接下来', '然后', '所以', '因此', '总之'],
+      emotionalAmplification: ['amazing', 'incredible', 'shocking', 'surprising', 'exciting', 'important', 'critical', 'crucial', 'essential', '惊人', '不可思议', '震惊', '令人兴奋', '重要', '关键', '至关重要'],
+      callToAction: ['subscribe', 'like', 'comment', 'share', 'follow', 'click', 'check out', 'visit', 'download', 'sign up', '订阅', '点赞', '评论', '分享', '关注', '点击', '访问', '下载', '注册']
     };
 
     // 识别结构类型
-    const identifyStructureType = (text) => {
+    const identifyStructureType = (text, startTime, videoDuration) => {
       const lowerText = text.toLowerCase();
       
+      // Hook：前 15-30 秒默认标记
+      if (startTime <= 30) {
+        for (const keyword of structureKeywords.hook) {
+          if (lowerText.includes(keyword.toLowerCase())) {
+            return 'hook';
+          }
+        }
+        // 前 15 秒默认 Hook
+        if (startTime <= 15) {
+          return 'hook';
+        }
+      }
+
+      // Call To Action：视频最后 30-60 秒
+      if (startTime >= videoDuration - 60) {
+        for (const keyword of structureKeywords.callToAction) {
+          if (lowerText.includes(keyword.toLowerCase())) {
+            return 'callToAction';
+          }
+        }
+        // 最后 30 秒默认 Call To Action
+        if (startTime >= videoDuration - 30) {
+          return 'callToAction';
+        }
+      }
+
+      // 其他类型：按关键词匹配
       for (const [type, keywords] of Object.entries(structureKeywords)) {
+        if (type === 'hook' || type === 'callToAction') continue; // 已处理
         for (const keyword of keywords) {
           if (lowerText.includes(keyword.toLowerCase())) {
             return type;
@@ -254,13 +288,34 @@ function ClipStructApp() {
         }
       }
       
-      return 'main'; // 默认类型
+      return 'corePoint'; // 默认类型
+    };
+
+    // 生成意图说明（基于结构类型和文本）
+    const generateIntent = (type, text) => {
+      const intentTemplates = {
+        hook: '通过吸引人的开场吸引观众注意，激发好奇心',
+        background: '提供背景信息和上下文，建立故事基础',
+        corePoint: '阐述核心观点和关键信息',
+        example: '通过具体案例和例子说明观点',
+        transition: '承上启下，连接不同内容段落',
+        emotionalAmplification: '放大情绪，强调重要性',
+        callToAction: '引导观众采取行动（订阅、点赞等）'
+      };
+      
+      // 尝试从文本中提取更具体的意图
+      const firstSentence = text.split(/[。！？.!?]/)[0];
+      if (firstSentence.length > 10 && firstSentence.length < 50) {
+        return firstSentence;
+      }
+      
+      return intentTemplates[type] || '内容段落';
     };
 
     // 分析字幕，生成结构段
     for (let i = 0; i < captions.length; i++) {
       const caption = captions[i];
-      const structureType = identifyStructureType(caption.text);
+      const structureType = identifyStructureType(caption.text, caption.start, videoDuration);
 
       if (!currentSegment) {
         // 开始新的结构段
@@ -268,6 +323,7 @@ function ClipStructApp() {
           id: segments.length + 1,
           title: getSegmentTitle(structureType, caption.text),
           type: structureType,
+          intent: generateIntent(structureType, caption.text),
           start: caption.start,
           end: caption.start + caption.duration,
           captions: [caption]
@@ -284,6 +340,7 @@ function ClipStructApp() {
             id: segments.length + 1,
             title: getSegmentTitle(structureType, caption.text),
             type: structureType,
+            intent: generateIntent(structureType, caption.text),
             start: caption.start,
             end: caption.start + caption.duration,
             captions: [caption]
@@ -292,6 +349,9 @@ function ClipStructApp() {
           // 继续当前结构段
           currentSegment.end = caption.start + caption.duration;
           currentSegment.captions.push(caption);
+          // 更新意图：合并文本后重新生成
+          const mergedText = currentSegment.captions.map(c => c.text).join(' ');
+          currentSegment.intent = generateIntent(currentSegment.type, mergedText);
         }
       }
     }
@@ -308,9 +368,13 @@ function ClipStructApp() {
   // 获取结构段标题
   const getSegmentTitle = (type, text) => {
     const typeTitles = {
-      introduction: '介绍',
-      main: '主体',
-      conclusion: '总结'
+      hook: 'Hook（吸引注意）',
+      background: 'Background（背景铺垫）',
+      corePoint: 'Core Point（核心观点）',
+      example: 'Example（案例说明）',
+      transition: 'Transition（转折）',
+      emotionalAmplification: 'Emotional（情绪放大）',
+      callToAction: 'Call To Action（行动引导）'
     };
 
     // 尝试从文本中提取标题
@@ -322,7 +386,24 @@ function ClipStructApp() {
     return typeTitles[type] || '内容';
   };
 
-  // 获取字幕主函数：优先 Innertube，再旧 API，最后 DOM 备用；完成后尝试恢复已保存结构
+  // 从 storage 加载已保存结构（异步，返回 Promise）
+  const loadStructureFromStorage = (vid) => {
+    return new Promise((resolve) => {
+      if (!vid) {
+        resolve(null);
+        return;
+      }
+      chrome.runtime.sendMessage({ action: 'loadStructure', videoId: vid }, (response) => {
+        if (response?.success && response?.data?.segments?.length) {
+          resolve(response.data.segments);
+        } else {
+          resolve(null);
+        }
+      });
+    });
+  };
+
+  // 获取字幕主函数：优先读取已保存结构，没有再分析
   const fetchCaptions = async () => {
     const vid = getVideoId();
     if (!vid) {
@@ -334,7 +415,28 @@ function ClipStructApp() {
     setIsLoading(true);
     setError(null);
     setPhase('fetching');
+    
     try {
+      // 先尝试加载已保存的结构（优先恢复用户编辑）
+      const savedSegments = await loadStructureFromStorage(vid);
+      if (savedSegments?.length) {
+        setStructuredSegments(savedSegments);
+        setPhase('done');
+        setIsLoading(false);
+        // 如果有已保存结构，仍然需要获取字幕用于显示（但不再分析）
+        // 这里可以选择不获取字幕，或者异步获取但不影响结构显示
+        // 为了完整性，我们仍然获取字幕但不重新分析
+        let captionsData = await fetchCaptionsFromInnertube(vid);
+        if (!captionsData?.length) captionsData = await fetchCaptionsFromAPI();
+        if (!captionsData?.length) captionsData = await fetchCaptionsFromDOM();
+        if (captionsData?.length) {
+          const processedCaptions = preprocessCaptions(captionsData);
+          setCaptions(processedCaptions);
+        }
+        return;
+      }
+
+      // 没有已保存结构，开始获取字幕并分析
       let captionsData = await fetchCaptionsFromInnertube(vid);
       if (!captionsData?.length) captionsData = await fetchCaptionsFromAPI();
       if (!captionsData?.length) captionsData = await fetchCaptionsFromDOM();
@@ -345,10 +447,6 @@ function ClipStructApp() {
         const segments = analyzeStructure(processedCaptions);
         setStructuredSegments(segments);
         setPhase('done');
-        // 若有已保存结构则优先恢复（保留用户编辑）
-        loadStructureFromStorage(vid, (savedSegments) => {
-          if (savedSegments?.length) setStructuredSegments(savedSegments);
-        });
       } else {
         setError('无法获取视频字幕（可能无字幕或仅自动生成）');
         setStructuredSegments([]);
@@ -363,21 +461,15 @@ function ClipStructApp() {
     }
   };
 
-  // 从 storage 加载已保存结构（供 fetchCaptions 完成后恢复用）
-  const loadStructureFromStorage = (vid, onLoaded) => {
-    if (!vid || !onLoaded) return;
-    chrome.runtime.sendMessage({ action: 'loadStructure', videoId: vid }, (response) => {
-      if (response?.success && response?.data?.segments?.length) {
-        onLoaded(response.data.segments);
-      }
-    });
-  };
+  // 使用 useRef 保存上一次的 videoId，避免闭包问题
+  const prevVideoIdRef = useRef('');
 
   // 监听视频变化：初次加载 + YouTube 站内切视频（SPA）时重新拉取字幕
   useEffect(() => {
     const apply = () => {
       const currentVideoId = getVideoId();
       if (!currentVideoId) {
+        prevVideoIdRef.current = '';
         setVideoId('');
         setCaptions([]);
         setStructuredSegments([]);
@@ -386,7 +478,9 @@ function ClipStructApp() {
         setPhase('no_video');
         return;
       }
-      if (currentVideoId !== videoId) {
+      // 使用 ref 而不是 state 来比较，避免闭包问题
+      if (currentVideoId !== prevVideoIdRef.current) {
+        prevVideoIdRef.current = currentVideoId;
         setVideoId(currentVideoId);
         setCaptions([]);
         setStructuredSegments([]);
@@ -434,7 +528,8 @@ function ClipStructApp() {
     const newSegment = {
       id: structuredSegments.length + 1,
       title: '新结构段',
-      type: 'main',
+      type: 'corePoint',
+      intent: '内容段落',
       start: newSegmentStart,
       end: newSegmentEnd,
       captions: []
@@ -477,12 +572,150 @@ function ClipStructApp() {
     );
   };
 
+  // 导出为 Markdown 格式
+  const exportToMarkdown = () => {
+    const currentVideoId = getVideoId();
+    const videoTitle = document.querySelector('h1.ytd-watch-metadata yt-formatted-string')?.textContent || '未知标题';
+    const videoUrl = window.location.href;
+    
+    let markdown = `# 视频结构分析\n`;
+    markdown += `- 标题：${videoTitle}\n`;
+    markdown += `- URL：${videoUrl}\n\n`;
+    markdown += `## 结构时间轴\n`;
+    
+    structuredSegments.forEach(segment => {
+      const typeName = {
+        hook: 'Hook',
+        background: 'Background',
+        corePoint: 'Core Point',
+        example: 'Example',
+        transition: 'Transition',
+        emotionalAmplification: 'Emotional Amplification',
+        callToAction: 'Call To Action'
+      }[segment.type] || segment.type;
+      
+      markdown += `${formatTime(segment.start)}-${formatTime(segment.end)} | ${typeName} | ${segment.intent || segment.title}\n`;
+    });
+    
+    markdown += `\n## 结构概览\n`;
+    const typeStats = {};
+    structuredSegments.forEach(segment => {
+      const duration = segment.end - segment.start;
+      if (!typeStats[segment.type]) {
+        typeStats[segment.type] = 0;
+      }
+      typeStats[segment.type] += duration;
+    });
+    
+    Object.entries(typeStats).forEach(([type, duration]) => {
+      const typeName = {
+        hook: 'Hook',
+        background: 'Background',
+        corePoint: 'Core Point',
+        example: 'Example',
+        transition: 'Transition',
+        emotionalAmplification: 'Emotional Amplification',
+        callToAction: 'Call To Action'
+      }[type] || type;
+      markdown += `- ${typeName}：${Math.round(duration)}秒\n`;
+    });
+    
+    // 下载文件
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `clipstruct_${currentVideoId}_${Date.now()}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // 导出为纯文本格式
+  const exportToText = () => {
+    const currentVideoId = getVideoId();
+    const videoTitle = document.querySelector('h1.ytd-watch-metadata yt-formatted-string')?.textContent || '未知标题';
+    const videoUrl = window.location.href;
+    
+    let text = `视频结构分析\n`;
+    text += `标题：${videoTitle}\n`;
+    text += `URL：${videoUrl}\n\n`;
+    text += `结构时间轴\n`;
+    
+    structuredSegments.forEach(segment => {
+      const typeName = {
+        hook: 'Hook',
+        background: 'Background',
+        corePoint: 'Core Point',
+        example: 'Example',
+        transition: 'Transition',
+        emotionalAmplification: 'Emotional Amplification',
+        callToAction: 'Call To Action'
+      }[segment.type] || segment.type;
+      
+      text += `${formatTime(segment.start)}-${formatTime(segment.end)} | ${typeName} | ${segment.intent || segment.title}\n`;
+    });
+    
+    text += `\n结构概览\n`;
+    const typeStats = {};
+    structuredSegments.forEach(segment => {
+      const duration = segment.end - segment.start;
+      if (!typeStats[segment.type]) {
+        typeStats[segment.type] = 0;
+      }
+      typeStats[segment.type] += duration;
+    });
+    
+    Object.entries(typeStats).forEach(([type, duration]) => {
+      const typeName = {
+        hook: 'Hook',
+        background: 'Background',
+        corePoint: 'Core Point',
+        example: 'Example',
+        transition: 'Transition',
+        emotionalAmplification: 'Emotional Amplification',
+        callToAction: 'Call To Action'
+      }[type] || type;
+      text += `${typeName}：${Math.round(duration)}秒\n`;
+    });
+    
+    // 下载文件
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `clipstruct_${currentVideoId}_${Date.now()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="clipstruct-container">
       <div className="clipstruct-panel">
         <div className="clipstruct-header">
           <h3>ClipStruct</h3>
           <div className="header-buttons">
+            {structuredSegments.length > 0 && (
+              <div className="export-buttons">
+                <button 
+                  className="export-button"
+                  onClick={exportToMarkdown}
+                  title="导出为 Markdown"
+                >
+                  📄 MD
+                </button>
+                <button 
+                  className="export-button"
+                  onClick={exportToText}
+                  title="导出为纯文本"
+                >
+                  📝 TXT
+                </button>
+              </div>
+            )}
             <button 
               className={`edit-button ${isEditing ? 'edit-mode' : ''}`}
               onClick={() => setIsEditing(!isEditing)}
@@ -537,17 +770,22 @@ function ClipStructApp() {
                         }
                       };
                       
-                      // 处理编辑结构段标题
-                      const handleEditTitle = () => {
+                      // 处理编辑结构段标题和意图
+                      const handleEditSegment = () => {
                         setEditingSegmentId(segment.id);
                         setEditingTitle(segment.title);
+                        setEditingIntent(segment.intent || '');
                       };
 
-                      // 处理保存结构段标题
-                      const handleSaveTitle = () => {
+                      // 处理保存结构段标题和意图
+                      const handleSaveSegment = () => {
                         if (editingTitle.trim()) {
                           const updatedSegments = structuredSegments.map(s => 
-                            s.id === segment.id ? { ...s, title: editingTitle.trim() } : s
+                            s.id === segment.id ? { 
+                              ...s, 
+                              title: editingTitle.trim(),
+                              intent: editingIntent.trim() || s.intent
+                            } : s
                           );
                           setStructuredSegments(updatedSegments);
                           // 自动保存结构
@@ -555,6 +793,7 @@ function ClipStructApp() {
                         }
                         setEditingSegmentId(null);
                         setEditingTitle('');
+                        setEditingIntent('');
                       };
 
                       // 处理删除结构段
@@ -578,28 +817,58 @@ function ClipStructApp() {
                         >
                           <div className="segment-header">
                             {editingSegmentId === segment.id ? (
-                              <div className="segment-title-edit">
+                              <div className="segment-edit-form">
                                 <input 
                                   type="text" 
+                                  className="segment-title-input"
                                   value={editingTitle}
                                   onChange={(e) => setEditingTitle(e.target.value)}
-                                  onBlur={handleSaveTitle}
-                                  onKeyPress={(e) => e.key === 'Enter' && handleSaveTitle()}
+                                  placeholder="标题"
                                   autoFocus
                                 />
+                                <textarea
+                                  className="segment-intent-input"
+                                  value={editingIntent}
+                                  onChange={(e) => setEditingIntent(e.target.value)}
+                                  placeholder="意图说明（一句话）"
+                                  rows={2}
+                                />
+                                <div className="segment-edit-actions">
+                                  <button 
+                                    className="segment-save-button"
+                                    onClick={handleSaveSegment}
+                                  >
+                                    保存
+                                  </button>
+                                  <button 
+                                    className="segment-cancel-button"
+                                    onClick={() => {
+                                      setEditingSegmentId(null);
+                                      setEditingTitle('');
+                                      setEditingIntent('');
+                                    }}
+                                  >
+                                    取消
+                                  </button>
+                                </div>
                               </div>
                             ) : (
-                              <span className="segment-title">{segment.title}</span>
+                              <>
+                                <span className="segment-title">{segment.title}</span>
+                                {segment.intent && (
+                                  <span className="segment-intent">{segment.intent}</span>
+                                )}
+                              </>
                             )}
                             <div className="segment-header-actions">
                               <span className="segment-time">{formatTime(segment.start)} - {formatTime(segment.end)}</span>
-                              {isEditing && (
+                              {isEditing && editingSegmentId !== segment.id && (
                                 <div className="segment-actions">
                                   <button 
                                     className="segment-action-button edit" 
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      handleEditTitle();
+                                      handleEditSegment();
                                     }}
                                   >
                                     ✏️
@@ -682,12 +951,16 @@ function formatTime(seconds) {
   return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 }
 
-// 获取结构段颜色
+// 获取结构段颜色（按 PRD 要求）
 function getSegmentColor(type) {
   const colors = {
-    introduction: '#4CAF50', // 绿色
-    main: '#2196F3', // 蓝色
-    conclusion: '#FF9800' // 橙色
+    hook: '#FF4136', // 红色
+    background: '#0074D9', // 蓝色
+    corePoint: '#2ECC40', // 绿色
+    example: '#FFDC00', // 黄色
+    transition: '#B10DC9', // 紫色
+    emotionalAmplification: '#FF851B', // 橙色
+    callToAction: '#F012BE' // 粉色
   };
   return colors[type] || '#9E9E9E'; // 默认灰色
 }
