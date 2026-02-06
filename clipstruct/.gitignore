@@ -96,7 +96,9 @@ dist
 
 # Gatsby files
 .cache/
-public
+
+# 扩展静态资源：保留 public 目录与 manifest，仅忽略图标等二进制
+public/icons
 
 # Storybook build outputs
 .out

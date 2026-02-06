@@ -2,9 +2,13 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=380, initial-scale=1.0">
   <title>ClipStruct 设置</title>
   <link rel="stylesheet" href="popup.css">
+  <style>
+    /* 强制 Popup 窗口宽度，避免被渲染成细长条 */
+    html, body { min-width: 380px; width: 380px; max-width: 380px; margin: 0; padding: 0; overflow-x: hidden; }
+  </style>
 </head>
 <body>
   <div id="popup-root"></div>

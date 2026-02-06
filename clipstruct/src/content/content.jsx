@@ -10,9 +10,11 @@ function ClipStructApp() {
   const [isEditing, setIsEditing] = useState(false);
   const [editingSegmentId, setEditingSegmentId] = useState(null);
   const [editingTitle, setEditingTitle] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [videoId, setVideoId] = useState('');
+  // 采集阶段：便于在视频页明确展示「正在采集字幕」
+  const [phase, setPhase] = useState('checking'); // checking | no_video | fetching | parsing | done
 
   // 获取视频 ID
   const getVideoId = () => {
@@ -20,41 +22,82 @@ function ClipStructApp() {
     return urlParams.get('v');
   };
 
-  // 通过 ytplayer.config.captions API 获取字幕
+  // 通过 YouTube Innertube API 获取字幕（当前页面主流方式，不依赖 ytplayer 全局变量）
+  const fetchCaptionsFromInnertube = async (vid) => {
+    if (!vid) return null;
+    try {
+      const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context: {
+            client: { clientName: 'WEB', clientVersion: '2.20250101.00.00' }
+          },
+          videoId: vid
+        })
+      });
+      const data = await res.json();
+      const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (!tracks?.length) return null;
+      const track = tracks.find(t => (t.languageCode || '').startsWith('zh') || (t.languageCode || '').startsWith('en')) || tracks[0];
+      const baseUrl = track?.baseUrl;
+      if (!baseUrl) return null;
+      const url = baseUrl.includes('fmt=') ? baseUrl : `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}fmt=json3`;
+      const captionRes = await fetch(url, {
+        headers: { 'User-Agent': navigator.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      });
+      const text = await captionRes.text();
+      if (text.trim().startsWith('{')) return parseCaptionsJSON3(text);
+      return parseCaptionsXML(text);
+    } catch (err) {
+      console.error('Innertube 字幕获取失败:', err);
+      return null;
+    }
+  };
+
+  // 解析 YouTube 字幕 JSON3 格式（fmt=json3）
+  const parseCaptionsJSON3 = (jsonText) => {
+    try {
+      const data = JSON.parse(jsonText);
+      const events = data?.events || [];
+      const captions = [];
+      for (const ev of events) {
+        if (!ev.segs) continue;
+        const text = (ev.segs || []).map(s => s.utf8 || '').join('').trim();
+        if (!text) continue;
+        captions.push({
+          text,
+          start: (ev.tStartMs || 0) / 1000,
+          duration: (ev.dDurationMs || 0) / 1000
+        });
+      }
+      return captions;
+    } catch (e) {
+      console.error('parseCaptionsJSON3 error:', e);
+      return [];
+    }
+  };
+
+  // 旧版：通过 ytplayer.config.captions 获取（部分页面可能仍存在）
   const fetchCaptionsFromAPI = async () => {
     try {
-      // 等待 ytplayer 对象加载
       await new Promise((resolve) => {
         const checkYTPlayer = setInterval(() => {
-          if (window.ytplayer && window.ytplayer.config && window.ytplayer.config.captions) {
+          if (window.ytplayer?.config?.captions) {
             clearInterval(checkYTPlayer);
             resolve();
           }
         }, 100);
-        
-        // 10秒超时
-        setTimeout(() => {
-          clearInterval(checkYTPlayer);
-          resolve();
-        }, 10000);
+        setTimeout(() => { clearInterval(checkYTPlayer); resolve(); }, 10000);
       });
-
-      if (window.ytplayer && window.ytplayer.config && window.ytplayer.config.captions) {
-        const captionsConfig = window.ytplayer.config.captions;
-        if (captionsConfig.playerCaptionsTracklistRenderer && 
-            captionsConfig.playerCaptionsTracklistRenderer.captionTracks) {
-          const tracks = captionsConfig.playerCaptionsTracklistRenderer.captionTracks;
-          // 优先选择中文或英文字幕
-          const track = tracks.find(t => t.languageCode === 'zh' || t.languageCode === 'en') || tracks[0];
-          
-          if (track && track.baseUrl) {
-            const response = await fetch(track.baseUrl);
-            const xmlText = await response.text();
-            return parseCaptionsXML(xmlText);
-          }
-        }
-      }
-      return null;
+      const captionsConfig = window.ytplayer?.config?.captions;
+      const tracks = captionsConfig?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (!tracks?.length) return null;
+      const track = tracks.find(t => t.languageCode === 'zh' || t.languageCode === 'en') || tracks[0];
+      if (!track?.baseUrl) return null;
+      const response = await fetch(track.baseUrl);
+      const xmlText = await response.text();
+      return parseCaptionsXML(xmlText);
     } catch (err) {
       console.error('Error fetching captions from API:', err);
       return null;
@@ -279,52 +322,84 @@ function ClipStructApp() {
     return typeTitles[type] || '内容';
   };
 
-  // 获取字幕主函数
+  // 获取字幕主函数：优先 Innertube，再旧 API，最后 DOM 备用；完成后尝试恢复已保存结构
   const fetchCaptions = async () => {
+    const vid = getVideoId();
+    if (!vid) {
+      setError('当前不是有效的 YouTube 视频页');
+      setIsLoading(false);
+      setPhase('no_video');
+      return;
+    }
     setIsLoading(true);
     setError(null);
-
+    setPhase('fetching');
     try {
-      // 首先尝试 API 方法
-      let captionsData = await fetchCaptionsFromAPI();
-      
-      // 如果 API 方法失败，尝试 DOM 方法
-      if (!captionsData || captionsData.length === 0) {
-        captionsData = await fetchCaptionsFromDOM();
-      }
-
-      if (captionsData && captionsData.length > 0) {
+      let captionsData = await fetchCaptionsFromInnertube(vid);
+      if (!captionsData?.length) captionsData = await fetchCaptionsFromAPI();
+      if (!captionsData?.length) captionsData = await fetchCaptionsFromDOM();
+      if (captionsData?.length) {
+        setPhase('parsing');
         const processedCaptions = preprocessCaptions(captionsData);
         setCaptions(processedCaptions);
-        
-        // 分析视频结构
         const segments = analyzeStructure(processedCaptions);
         setStructuredSegments(segments);
+        setPhase('done');
+        // 若有已保存结构则优先恢复（保留用户编辑）
+        loadStructureFromStorage(vid, (savedSegments) => {
+          if (savedSegments?.length) setStructuredSegments(savedSegments);
+        });
       } else {
-        setError('无法获取视频字幕');
+        setError('无法获取视频字幕（可能无字幕或仅自动生成）');
         setStructuredSegments([]);
+        setPhase('done');
       }
     } catch (err) {
       setError('获取字幕时发生错误');
+      setPhase('done');
       console.error('Error fetching captions:', err);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // 监听视频变化
+  // 从 storage 加载已保存结构（供 fetchCaptions 完成后恢复用）
+  const loadStructureFromStorage = (vid, onLoaded) => {
+    if (!vid || !onLoaded) return;
+    chrome.runtime.sendMessage({ action: 'loadStructure', videoId: vid }, (response) => {
+      if (response?.success && response?.data?.segments?.length) {
+        onLoaded(response.data.segments);
+      }
+    });
+  };
+
+  // 监听视频变化：初次加载 + YouTube 站内切视频（SPA）时重新拉取字幕
   useEffect(() => {
-    const currentVideoId = getVideoId();
-    if (currentVideoId !== videoId) {
-      setVideoId(currentVideoId);
-      setCaptions([]);
-      setStructuredSegments([]);
-      setIsLoading(true);
-      fetchCaptions();
-      // 尝试加载已保存的结构
-      loadStructure();
-    }
-  }, [window.location.href]);
+    const apply = () => {
+      const currentVideoId = getVideoId();
+      if (!currentVideoId) {
+        setVideoId('');
+        setCaptions([]);
+        setStructuredSegments([]);
+        setIsLoading(false);
+        setError(null);
+        setPhase('no_video');
+        return;
+      }
+      if (currentVideoId !== videoId) {
+        setVideoId(currentVideoId);
+        setCaptions([]);
+        setStructuredSegments([]);
+        setError(null);
+        setPhase('fetching');
+        fetchCaptions();
+      }
+    };
+    apply();
+    const onNav = () => setTimeout(apply, 500);
+    window.addEventListener('yt-navigate-finish', onNav);
+    return () => window.removeEventListener('yt-navigate-finish', onNav);
+  }, []);
 
   // 监听视频播放状态
   useEffect(() => {
@@ -402,27 +477,6 @@ function ClipStructApp() {
     );
   };
 
-  // 加载结构分析结果
-  const loadStructure = () => {
-    const currentVideoId = getVideoId();
-    if (!currentVideoId) return;
-
-    chrome.runtime.sendMessage(
-      { 
-        action: 'loadStructure',
-        videoId: currentVideoId
-      },
-      (response) => {
-        if (response && response.success && response.data) {
-          setStructuredSegments(response.data.segments);
-          console.log('Structure loaded successfully');
-        } else {
-          console.log('No saved structure found');
-        }
-      }
-    );
-  };
-
   return (
     <div className="clipstruct-container">
       <div className="clipstruct-panel">
@@ -438,11 +492,35 @@ function ClipStructApp() {
             <button className="clipstruct-toggle">▼</button>
           </div>
         </div>
+        {/* 采集阶段状态条：在视频页明确展示「正在采集字幕」 */}
+        {(phase === 'fetching' || phase === 'parsing') && (
+          <div className="clipstruct-status-bar">
+            <span className="status-spinner" aria-hidden />
+            <span className="status-text">
+              {phase === 'fetching' ? '正在采集字幕…' : '正在解析结构…'}
+            </span>
+          </div>
+        )}
         <div className="clipstruct-content">
-          {isLoading ? (
-            <div className="loading">加载字幕中...</div>
+          {phase === 'checking' ? (
+            <div className="loading loading--active">
+              <span className="loading-spinner" aria-hidden />
+              <span>正在检测视频页…</span>
+            </div>
+          ) : phase === 'no_video' ? (
+            <div className="status-no-video">请打开任意视频播放页以使用 ClipStruct</div>
+          ) : isLoading ? (
+            <div className="loading loading--active">
+              <span className="loading-spinner" aria-hidden />
+              <span>{phase === 'parsing' ? '正在解析结构…' : '正在采集字幕…'}</span>
+            </div>
           ) : error ? (
-            <div className="error">{error}</div>
+            <div className="error-box">
+              <div className="error">{error}</div>
+              <button type="button" className="retry-button" onClick={() => fetchCaptions()}>
+                重新加载字幕
+              </button>
+            </div>
           ) : captions.length > 0 ? (
             <>
               <div className="structure-analysis">

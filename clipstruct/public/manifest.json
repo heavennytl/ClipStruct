@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "ClipStruct",
+  "version": "1.0.0",
+  "description": "YouTube 视频结构拉片插件，帮助创作者理解视频结构与内容意图",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content/content.js"],
+      "css": ["assets/content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html"
+  }
+}
