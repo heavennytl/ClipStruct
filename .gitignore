@@ -1,50 +1,42 @@
-# IDE and project management files
-.trae/
-
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# Dependency directories
+# 依赖
 node_modules/
-jspm_packages/
 
-# Build outputs
+# 构建产物
 dist/
-dist-ssr
+dist-ssr/
 *.local
 
-# Editor directories and files
+# 日志
+*.log
+npm-debug.log*
+
+# 编辑器
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
+.idea/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-# Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# IDE 特定目录
+.trae/
+.cursor/
 
-# Test coverage
-coverage
+# 环境变量
+.env
+.env.*
+
+# 测试覆盖率
+coverage/
 *.lcov
 
-# Temporary files
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
 *.tmp
 *.temp
-.cache
-
-# OS generated files
-Thumbs.db
+.cache/
