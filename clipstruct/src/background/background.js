@@ -47,6 +47,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .catch((err) => sendResponse({ success: false, message: err.message }));
       return true;
 
+    case 'fetchCaptionData':
+      handleFetchCaptionData(message.videoId, sender.tab.id)
+        .then((data) => sendResponse({ success: true, data }))
+        .catch((err) => sendResponse({ success: false, error: err.message }));
+      return true;
+
     default:
       sendResponse({ success: false, message: '未知操作' });
   }
@@ -131,6 +137,222 @@ async function updateHistory(videoId, videoTitle) {
   }
 
   await chrome.storage.local.set({ [STORAGE_KEYS.history]: history });
+}
+
+/**
+ * 通过多种方法获取字幕数据
+ * 方法1: chrome.scripting.executeScript 在页面主世界（正确的 origin + Innertube API）
+ * 方法2: Service Worker 直接获取（独立于页面环境）
+ */
+async function handleFetchCaptionData(videoId, tabId) {
+  let captionTracks = null;
+
+  // === 步骤1: 页面主世界提取轨道并下载 ===
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: async (vid) => {
+        /** 选择最佳字幕语言 */
+        function selectTrack(tracks) {
+          const zh = tracks.find(t =>
+            ['zh', 'zh-Hans', 'zh-CN', 'zh-Hant', 'zh-TW'].includes(t.languageCode)
+          );
+          if (zh) return zh;
+          const en = tracks.find(t =>
+            t.languageCode === 'en' || t.languageCode.startsWith('en-')
+          );
+          return en || tracks[0];
+        }
+
+        /** 清理 baseUrl 并尝试下载（带诊断日志） */
+        async function tryDownload(track) {
+          // 移除 baseUrl 中已有的 fmt 参数，避免冲突
+          let base = track.baseUrl.replace(/([?&])fmt=[^&]*/g, '').replace(/[?&]$/, '');
+          const sep = base.includes('?') ? '&' : '?';
+
+          for (const fmt of ['srv1', 'json3', 'vtt']) {
+            try {
+              const url = base + sep + 'fmt=' + fmt;
+              const resp = await fetch(url, { cache: 'no-store' });
+              const text = await resp.text();
+              // 诊断日志（显示在浏览器控制台）
+              console.log('[ClipStruct] fetch ' + fmt + ': status=' + resp.status + ', len=' + text.length);
+              if (text && text.trim().length > 10) {
+                return {
+                  text, format: fmt,
+                  lang: track.languageCode,
+                  langName: track.name?.simpleText || '',
+                };
+              }
+            } catch (e) {
+              console.warn('[ClipStruct] fetch ' + fmt + ' error:', e.message);
+            }
+          }
+          return null;
+        }
+
+        try {
+          // 方法A: 读取当前页面的 ytInitialPlayerResponse
+          let tracks = null;
+          const pr = window.ytInitialPlayerResponse;
+          if (pr && pr.videoDetails?.videoId === vid) {
+            tracks = pr.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+            if (tracks?.length) console.log('[ClipStruct] ytInitialPlayerResponse: ' + tracks.length + ' 个字幕轨道');
+          }
+
+          // 方法B: 通过 Innertube API 获取（更稳定，不依赖页面变量）
+          if (!tracks?.length) {
+            try {
+              const apiKey = window.ytcfg?.data_?.INNERTUBE_API_KEY || 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+              const clientName = window.ytcfg?.data_?.INNERTUBE_CLIENT_NAME || 'WEB';
+              const clientVersion = window.ytcfg?.data_?.INNERTUBE_CLIENT_VERSION || '2.20240101';
+              console.log('[ClipStruct] 尝试 Innertube API, key=' + apiKey?.substring(0, 10) + '...');
+
+              const resp = await fetch('/youtubei/v1/player?key=' + apiKey, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  videoId: vid,
+                  context: {
+                    client: { clientName: clientName, clientVersion: clientVersion },
+                  },
+                }),
+                cache: 'no-store',
+              });
+              const data = await resp.json();
+              tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+              if (tracks?.length) {
+                console.log('[ClipStruct] Innertube API: ' + tracks.length + ' 个字幕轨道');
+              } else {
+                console.warn('[ClipStruct] Innertube API: 未返回字幕轨道');
+              }
+            } catch (e) {
+              console.warn('[ClipStruct] Innertube API error:', e.message);
+            }
+          }
+
+          if (!tracks?.length) return { error: 'noTracks' };
+
+          const track = selectTrack(tracks);
+          console.log('[ClipStruct] 选中: ' + track.languageCode + ' (' + (track.name?.simpleText || '') + ')');
+          console.log('[ClipStruct] baseUrl: ' + track.baseUrl?.substring(0, 100) + '...');
+
+          const result = await tryDownload(track);
+          if (result) return result;
+
+          // 下载失败，返回轨道信息供 Service Worker 使用
+          return {
+            error: 'downloadFailed',
+            tracksInfo: tracks.map(t => ({
+              baseUrl: t.baseUrl,
+              languageCode: t.languageCode,
+              name: t.name?.simpleText || '',
+            })),
+          };
+        } catch (e) {
+          return { error: e.message };
+        }
+      },
+      args: [videoId],
+    });
+
+    const r = results?.[0]?.result;
+    if (r && !r.error) return r;
+
+    // 页面主世界下载失败但提取到了轨道信息 → 用 Service Worker 尝试
+    if (r?.tracksInfo?.length) {
+      captionTracks = r.tracksInfo;
+      console.log('[ClipStruct BG] 页面主世界下载失败，用 SW 尝试，共', captionTracks.length, '个轨道');
+    } else {
+      console.warn('[ClipStruct BG] 页面主世界:', r?.error);
+    }
+  } catch (err) {
+    console.warn('[ClipStruct BG] executeScript 异常:', err.message);
+  }
+
+  // === 步骤2: 如果无轨道信息，SW 自行获取页面 HTML 提取 ===
+  if (!captionTracks?.length) {
+    try {
+      const pageResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, { cache: 'no-store' });
+      const html = await pageResp.text();
+      const pr = extractPlayerResponseFromHtml(html);
+      const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (tracks?.length) {
+        captionTracks = tracks.map(t => ({
+          baseUrl: t.baseUrl,
+          languageCode: t.languageCode,
+          name: t.name?.simpleText || '',
+        }));
+        console.log('[ClipStruct BG] SW 从页面 HTML 提取到', captionTracks.length, '个轨道');
+      }
+    } catch (err) {
+      console.warn('[ClipStruct BG] SW 获取页面失败:', err.message);
+    }
+  }
+
+  if (!captionTracks?.length) {
+    throw new Error('该视频没有可用字幕');
+  }
+
+  // === 步骤3: Service Worker 直接下载字幕 ===
+  const track = selectBestTrack(captionTracks);
+  console.log(`[ClipStruct BG] SW 下载: ${track.languageCode} (${track.name})`);
+
+  let base = track.baseUrl.replace(/([?&])fmt=[^&]*/g, '').replace(/[?&]$/, '');
+  const sep = base.includes('?') ? '&' : '?';
+
+  for (const fmt of ['srv1', 'json3', 'vtt']) {
+    try {
+      const resp = await fetch(base + sep + 'fmt=' + fmt, { cache: 'no-store' });
+      const text = await resp.text();
+      console.log(`[ClipStruct BG] SW ${fmt}: status=${resp.status}, len=${text.length}`);
+      if (text && text.trim().length > 10) {
+        return { text, format: fmt, lang: track.languageCode, langName: track.name };
+      }
+    } catch (e) {
+      console.warn(`[ClipStruct BG] SW ${fmt}:`, e.message);
+    }
+  }
+
+  throw new Error('字幕下载失败（页面主世界和 SW 均返回空）');
+}
+
+/** 从 HTML 中提取 ytInitialPlayerResponse（大括号计数法） */
+function extractPlayerResponseFromHtml(html) {
+  const marker = 'var ytInitialPlayerResponse = ';
+  const idx = html.indexOf(marker);
+  if (idx === -1) return null;
+
+  const start = idx + marker.length;
+  if (html[start] !== '{') return null;
+
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < html.length; i++) {
+    const c = html[i];
+    if (esc) { esc = false; continue; }
+    if (c === '\\' && inStr) { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (!inStr) {
+      if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) {
+        return JSON.parse(html.substring(start, i + 1));
+      }
+    }
+  }
+  return null;
+}
+
+/** 选择最佳字幕轨道：中文 → 英文 → 第一个 */
+function selectBestTrack(tracks) {
+  const zh = tracks.find(t =>
+    ['zh', 'zh-Hans', 'zh-CN', 'zh-Hant', 'zh-TW'].includes(t.languageCode)
+  );
+  if (zh) return zh;
+  const en = tracks.find(t =>
+    t.languageCode === 'en' || t.languageCode.startsWith('en-')
+  );
+  return en || tracks[0];
 }
 
 // 扩展安装/更新时初始化

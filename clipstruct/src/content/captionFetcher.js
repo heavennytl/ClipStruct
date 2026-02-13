@@ -1,267 +1,222 @@
 /**
  * ClipStruct 字幕获取模块
- * 三层回退策略：Innertube API → ytplayer API → DOM 实时抓取
+ * 策略：
+ *   1. 通过 Background Script 调用 chrome.scripting.executeScript（页面主世界），最可靠
+ *   2. DOM 实时抓取兜底（需要用户播放视频且开启字幕）
  */
 
+// ===== 字幕获取主流程 =====
+
 /**
- * 字幕获取主函数（三层回退策略）
+ * 字幕获取主函数
  * @param {string} videoId - YouTube 视频 ID
  * @returns {Promise<Array>} 字幕数组 [{ text, start, duration }, ...]
  */
 export async function fetchCaptions(videoId) {
   if (!videoId) throw new Error('缺少视频 ID');
 
+  // 第一层：通过 Background Script + chrome.scripting.executeScript（页面主世界）
   try {
-    // 第一层：Innertube API（优先）
-    console.log('[ClipStruct] 尝试 Innertube API 获取字幕...');
-    const captions = await fetchViaInnertube(videoId);
-    if (captions && captions.length > 0) {
-      console.log(`[ClipStruct] Innertube API 成功，获取 ${captions.length} 条字幕`);
-      return captions;
+    console.log('[ClipStruct] 通过页面主世界获取字幕...');
+    const response = await chrome.runtime.sendMessage({
+      action: 'fetchCaptionData',
+      videoId,
+    });
+
+    if (response?.success && response.data?.text) {
+      const { text, format, lang, langName } = response.data;
+      console.log(`[ClipStruct] ✅ 字幕获取成功: ${lang} (${langName}), 格式: ${format}, ${text.length} 字符`);
+
+      let captions;
+      if (format === 'json3') captions = parseJson3Captions(JSON.parse(text));
+      else if (format === 'srv1') captions = parseSrv1Captions(text);
+      else if (format === 'vtt') captions = parseVttCaptions(text);
+
+      if (captions?.length > 0) return captions;
+      throw new Error('字幕解析后为空');
     }
+
+    throw new Error(response?.error || '获取失败');
   } catch (err) {
-    console.warn('[ClipStruct] Innertube API 失败:', err.message);
+    console.warn('[ClipStruct] 主世界获取失败:', err.message);
   }
 
+  // 第二层：DOM 实时抓取（兜底）
   try {
-    // 第二层：ytplayer API（备选）
-    console.log('[ClipStruct] 尝试 ytplayer API 获取字幕...');
-    const captions = await fetchViaYtplayer(videoId);
-    if (captions && captions.length > 0) {
-      console.log(`[ClipStruct] ytplayer API 成功，获取 ${captions.length} 条字幕`);
-      return captions;
-    }
-  } catch (err) {
-    console.warn('[ClipStruct] ytplayer API 失败:', err.message);
-  }
-
-  try {
-    // 第三层：DOM 实时抓取（兜底）
-    console.log('[ClipStruct] 尝试 DOM 实时抓取字幕...');
+    console.log('[ClipStruct] 尝试 DOM 实时抓取...');
     const captions = await fetchViaDom();
-    if (captions && captions.length > 0) {
-      console.log(`[ClipStruct] DOM 抓取成功，获取 ${captions.length} 条字幕`);
+    if (captions?.length > 0) {
+      console.log(`[ClipStruct] ✅ DOM 抓取成功，${captions.length} 条字幕`);
       return captions;
     }
   } catch (err) {
     console.warn('[ClipStruct] DOM 抓取失败:', err.message);
   }
 
-  throw new Error('该视频未提供字幕，或所有获取方式均失败');
+  throw new Error('该视频无可用字幕，或所有获取方式均失败');
 }
 
+// ===== DOM 实时抓取（兜底方案）=====
+
 /**
- * 第一层：通过 Innertube API 获取字幕
- * 从 ytInitialPlayerResponse 中解析 captionTracks
+ * DOM 空闲超时（毫秒）：连续 30 秒无新字幕视为采集完成
+ * 视频中常有音乐、过渡、画面展示等无语音段落，3 秒太短会误判
  */
-async function fetchViaInnertube(videoId) {
-  // 从页面脚本中提取 ytInitialPlayerResponse
-  const playerResponse = extractYtInitialPlayerResponse();
-  if (!playerResponse) throw new Error('未找到 ytInitialPlayerResponse');
-
-  // 解析字幕轨道列表
-  const captionTracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-  if (!captionTracks || captionTracks.length === 0) {
-    throw new Error('视频无可用字幕轨道');
-  }
-
-  // 语言优先级：中文 → 英文 → 第一个可用
-  const track = selectCaptionTrack(captionTracks);
-  if (!track || !track.baseUrl) throw new Error('无法选择字幕轨道');
-
-  console.log(`[ClipStruct] 选中字幕语言: ${track.languageCode} (${track.name?.simpleText || ''})`);
-
-  // 请求字幕数据（JSON3 格式）
-  const captionUrl = track.baseUrl + '&fmt=json3';
-  const response = await fetch(captionUrl);
-  if (!response.ok) throw new Error(`字幕请求失败: ${response.status}`);
-
-  const data = await response.json();
-  
-  // 解析 JSON3 格式字幕
-  return parseJson3Captions(data);
-}
+const DOM_IDLE_TIMEOUT = 30000;
 
 /**
- * 第二层：通过 ytplayer API 获取字幕
- * 从 ytplayer.config.args 中提取字幕配置
- */
-async function fetchViaYtplayer(videoId) {
-  // 尝试从全局对象中获取 ytplayer 配置
-  const ytplayer = window.ytplayer;
-  if (!ytplayer?.config?.args) throw new Error('未找到 ytplayer.config.args');
-
-  const captionTracks = ytplayer.config.args.player_response?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-  if (!captionTracks || captionTracks.length === 0) {
-    throw new Error('ytplayer 中无可用字幕轨道');
-  }
-
-  // 语言优先级选择
-  const track = selectCaptionTrack(captionTracks);
-  if (!track || !track.baseUrl) throw new Error('无法选择字幕轨道');
-
-  console.log(`[ClipStruct] ytplayer 选中字幕语言: ${track.languageCode}`);
-
-  // 请求字幕数据
-  const captionUrl = track.baseUrl + '&fmt=json3';
-  const response = await fetch(captionUrl);
-  if (!response.ok) throw new Error(`字幕请求失败: ${response.status}`);
-
-  const data = await response.json();
-  return parseJson3Captions(data);
-}
-
-/**
- * 第三层：DOM 实时抓取字幕
- * 监听页面字幕 DOM 节点变化，实时采集字幕文本与时间戳
- * 注意：此方法需要用户开启字幕，且只能获取播放过的字幕
+ * DOM 实时抓取字幕
+ * 通过 MutationObserver 监听字幕容器变化
  */
 async function fetchViaDom() {
   return new Promise((resolve, reject) => {
-    const captionContainer = document.querySelector('.ytp-caption-window-container');
-    if (!captionContainer) {
-      return reject(new Error('未找到字幕容器，请确保已开启字幕'));
-    }
+    const container = document.querySelector('.ytp-caption-window-container');
+    if (!container) return reject(new Error('未找到字幕容器，请确保已开启字幕'));
 
-    const captions = [];
-    const captionMap = new Map(); // 用于去重
-    let lastCaptionTime = 0;
-
-    // 获取视频元素
     const video = document.querySelector('video');
     if (!video) return reject(new Error('未找到视频元素'));
 
-    // 监听字幕变化
-    const observer = new MutationObserver(() => {
-      const captionElement = captionContainer.querySelector('.captions-text .ytp-caption-segment');
-      if (captionElement && captionElement.textContent) {
-        const text = captionElement.textContent.trim();
-        const currentTime = video.currentTime;
+    const captions = [];
+    const seen = new Map();
+    let idleTimer = null;
+    let absTimer = null;
 
-        // 去重：相同文本且时间接近不重复添加
-        if (text && !captionMap.has(text)) {
-          captionMap.set(text, true);
-          captions.push({
-            text,
-            start: currentTime,
-            duration: 0, // DOM 方法无法精确获取持续时间
-          });
-          lastCaptionTime = currentTime;
+    /** 完成采集 */
+    const finish = (reason) => {
+      observer.disconnect();
+      video.removeEventListener('ended', onEnded);
+      if (idleTimer) clearTimeout(idleTimer);
+      if (absTimer) clearTimeout(absTimer);
+
+      if (captions.length === 0) {
+        reject(new Error(`DOM: 未获取到字幕（${reason}）`));
+      } else {
+        console.log(`[ClipStruct] DOM 完成（${reason}），${captions.length} 条`);
+        resolve(captions);
+      }
+    };
+
+    /** 重置空闲计时器 */
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => finish(`${DOM_IDLE_TIMEOUT / 1000}秒无新字幕`),
+        DOM_IDLE_TIMEOUT,
+      );
+    };
+
+    /** 视频播放结束时立即完成 */
+    const onEnded = () => finish('视频播放结束');
+    video.addEventListener('ended', onEnded);
+
+    /** 监听字幕 DOM 变化 */
+    const observer = new MutationObserver(() => {
+      const el = container.querySelector('.captions-text .ytp-caption-segment');
+      if (el?.textContent) {
+        const text = el.textContent.trim();
+        if (text && !seen.has(text)) {
+          seen.set(text, true);
+          captions.push({ text, start: video.currentTime, duration: 0 });
+          resetIdle();
         }
       }
     });
 
-    observer.observe(captionContainer, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
+    observer.observe(container, { childList: true, subtree: true, characterData: true });
 
-    // 超时机制：5秒内未获取到字幕则失败
-    setTimeout(() => {
-      observer.disconnect();
-      if (captions.length === 0) {
-        reject(new Error('DOM 抓取超时，未获取到字幕'));
-      } else {
-        resolve(captions);
-      }
-    }, 5000);
+    // 绝对超时：视频时长 + 30 秒（默认 5 分钟）
+    const dur = video.duration;
+    const absMs = (dur && !isNaN(dur) && dur > 0) ? (dur + 30) * 1000 : 300000;
+    absTimer = setTimeout(() => finish('绝对超时'), absMs);
 
-    // 提示用户播放视频
-    console.log('[ClipStruct] DOM 模式：请播放视频以采集字幕...');
+    // 立即启动空闲计时器（若 30 秒内无任何字幕出现则快速失败）
+    resetIdle();
+
+    console.log(`[ClipStruct] DOM 模式：采集中（${DOM_IDLE_TIMEOUT / 1000}秒无新字幕后完成）...`);
   });
 }
 
-/**
- * 从页面脚本中提取 ytInitialPlayerResponse
- */
-function extractYtInitialPlayerResponse() {
-  try {
-    // 方法1：从 window 对象中直接获取
-    if (window.ytInitialPlayerResponse) {
-      return window.ytInitialPlayerResponse;
-    }
+// ===== 多格式解析器 =====
 
-    // 方法2：从页面 <script> 标签中解析
-    const scripts = document.querySelectorAll('script');
-    for (const script of scripts) {
-      const content = script.textContent;
-      if (content.includes('ytInitialPlayerResponse')) {
-        const match = content.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
-        if (match && match[1]) {
-          return JSON.parse(match[1]);
-        }
-      }
-    }
-
-    return null;
-  } catch (err) {
-    console.error('[ClipStruct] 提取 ytInitialPlayerResponse 失败:', err);
-    return null;
-  }
-}
-
-/**
- * 语言优先级选择字幕轨道
- * 优先级：中文（zh、zh-Hans、zh-CN）→ 英文（en）→ 第一个可用
- */
-function selectCaptionTrack(tracks) {
-  if (!tracks || tracks.length === 0) return null;
-
-  // 优先选择中文
-  const zhTrack = tracks.find(t => 
-    t.languageCode === 'zh' || 
-    t.languageCode === 'zh-Hans' || 
-    t.languageCode === 'zh-CN' ||
-    t.languageCode === 'zh-Hant' ||
-    t.languageCode === 'zh-TW'
-  );
-  if (zhTrack) return zhTrack;
-
-  // 其次选择英文
-  const enTrack = tracks.find(t => t.languageCode === 'en' || t.languageCode.startsWith('en-'));
-  if (enTrack) return enTrack;
-
-  // 最后返回第一个可用
-  return tracks[0];
-}
-
-/**
- * 解析 JSON3 格式字幕数据
- * @param {Object} data - YouTube JSON3 字幕数据
- * @returns {Array} 标准化字幕数组
- */
+/** 解析 json3 格式 */
 function parseJson3Captions(data) {
-  const events = data?.events || [];
+  return (data?.events || [])
+    .filter(e => e.segs?.length > 0)
+    .map(e => ({
+      text: e.segs.map(s => s.utf8 || '').join('').trim(),
+      start: (e.tStartMs || 0) / 1000,
+      duration: (e.dDurationMs || 0) / 1000,
+    }))
+    .filter(c => c.text);
+}
+
+/** 解析 srv1 (XML) 格式 */
+function parseSrv1Captions(xml) {
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
   const captions = [];
-
-  for (const event of events) {
-    // 过滤掉空事件和无文本事件
-    if (!event.segs || event.segs.length === 0) continue;
-
-    const text = event.segs.map(seg => seg.utf8 || '').join('').trim();
-    if (!text) continue;
-
-    captions.push({
-      text,
-      start: (event.tStartMs || 0) / 1000, // 毫秒转秒
-      duration: (event.dDurationMs || 0) / 1000,
-    });
-  }
-
+  doc.querySelectorAll('text').forEach(n => {
+    const text = n.textContent.trim()
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
+    if (text) {
+      captions.push({
+        text,
+        start: parseFloat(n.getAttribute('start') || '0'),
+        duration: parseFloat(n.getAttribute('dur') || '0'),
+      });
+    }
+  });
   return captions;
 }
 
-/**
- * 检测视频是否有字幕（快速检测，不实际获取）
- * @returns {boolean}
- */
+/** 解析 WebVTT 格式 */
+function parseVttCaptions(vtt) {
+  const captions = [];
+  const lines = vtt.split('\n');
+  let i = 0;
+
+  // 跳过头部（直到第一个时间戳行）
+  while (i < lines.length && !lines[i].includes('-->')) i++;
+
+  while (i < lines.length) {
+    const m = lines[i].trim().match(
+      /(\d{2}:)?(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}:)?(\d{2}):(\d{2})\.(\d{3})/,
+    );
+    if (m) {
+      const start = vttTime(m[1], m[2], m[3], m[4]);
+      const end = vttTime(m[5], m[6], m[7], m[8]);
+      i++;
+      let text = '';
+      while (i < lines.length && lines[i].trim() !== '' && !lines[i].includes('-->')) {
+        text += (text ? ' ' : '') + lines[i].trim();
+        i++;
+      }
+      if (text) {
+        captions.push({
+          text: text.replace(/<[^>]+>/g, ''),
+          start,
+          duration: end - start,
+        });
+      }
+    }
+    i++;
+  }
+  return captions;
+}
+
+/** VTT 时间戳转秒 */
+function vttTime(h, m, s, ms) {
+  return (h ? parseInt(h) : 0) * 3600 + parseInt(m) * 60 + parseInt(s) + parseInt(ms) / 1000;
+}
+
+/** 快速检测字幕可用性（不阻断流程） */
 export function hasCaptions() {
   try {
-    const playerResponse = extractYtInitialPlayerResponse();
-    const captionTracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-    return captionTracks && captionTracks.length > 0;
-  } catch {
+    const scripts = document.querySelectorAll('script');
+    for (const s of scripts) {
+      if (s.textContent.includes('"captionTracks"')) return true;
+    }
     return false;
-  }
+  } catch { return false; }
 }

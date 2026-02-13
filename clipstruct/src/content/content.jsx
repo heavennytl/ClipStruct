@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import './content.css';
-import { fetchCaptions, hasCaptions } from './captionFetcher.js';
+import { fetchCaptions } from './captionFetcher.js';
 import { preprocessCaptions, getSegmentText, getPreprocessStats } from './textPreprocessor.js';
 import { analyzeStructure, getStructureStats, getVideoDuration } from './structureAnalyzer.js';
 import { getVideoId, throttle } from '../common/utils.js';
@@ -119,14 +119,7 @@ function ClipStructApp() {
         return;
       }
 
-      // 阶段1：检查字幕
-      setPhase(ANALYSIS_PHASES.CHECKING);
-      const hasCaption = hasCaptions();
-      if (!hasCaption) {
-        throw new Error('该视频未提供字幕，无法分析结构');
-      }
-
-      // 阶段2：获取字幕
+      // 获取字幕（fetchCaptions 内部自动检测可用性）
       setPhase(ANALYSIS_PHASES.FETCHING);
       const rawCaptions = await fetchCaptions(videoId);
       setCaptions(rawCaptions);
@@ -321,10 +314,6 @@ function ClipStructApp() {
           {/* 状态显示 */}
           {phase === ANALYSIS_PHASES.IDLE && (
             <p className="clipstruct-placeholder">等待分析...</p>
-          )}
-
-          {phase === ANALYSIS_PHASES.CHECKING && (
-            <p className="clipstruct-status">🔍 检查字幕可用性...</p>
           )}
 
           {phase === ANALYSIS_PHASES.FETCHING && (

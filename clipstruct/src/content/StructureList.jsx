@@ -68,7 +68,7 @@ export default function StructureList({ segments, currentTime, onSegmentClick, o
               </div>
               <div className="structure-intent">{seg.intent}</div>
               <div className="structure-text">
-                {seg.text.substring(0, 80)}...
+                {seg.text.length > 80 ? seg.text.substring(0, 80) + '...' : seg.text}
               </div>
             </div>
             <button

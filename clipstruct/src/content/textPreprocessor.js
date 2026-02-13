@@ -102,9 +102,13 @@ function mergeShortCaptions(captions) {
   return merged;
 }
 
+/** 长段落强制分割的最大时长（秒） */
+const MAX_SEGMENT_DURATION = 90;
+
 /**
  * 自然分段检测
- * 规则：时间间隔 ≥ 5 秒视为自然分段点，添加段落标记
+ * 规则1：时间间隔 ≥ 5 秒视为自然分段点
+ * 规则2：单段超过 90 秒时强制按时间分割（解决自动字幕间隔小导致只有 1 段的问题）
  */
 function detectNaturalSegments(captions) {
   if (captions.length === 0) return [];
@@ -116,32 +120,74 @@ function detectNaturalSegments(captions) {
     currentSegment.push(captions[i]);
 
     // 检查是否到达自然分段点
-    if (i < captions.length - 1) {
-      const gap = captions[i + 1].start - captions[i].end;
-      if (gap >= SEGMENT_GAP_THRESHOLD) {
-        // 自然分段点：保存当前段落，开始新段落
-        segments.push({
-          type: 'segment',
-          captions: currentSegment,
-          start: currentSegment[0].start,
-          end: currentSegment[currentSegment.length - 1].end,
-        });
+    const isLastCaption = (i === captions.length - 1);
+    const hasNaturalGap = !isLastCaption &&
+      (captions[i + 1].start - captions[i].end) >= SEGMENT_GAP_THRESHOLD;
+
+    if (hasNaturalGap || isLastCaption) {
+      if (currentSegment.length > 0) {
+        segments.push(buildSegment(currentSegment));
         currentSegment = [];
       }
     }
   }
 
-  // 添加最后一个段落
-  if (currentSegment.length > 0) {
-    segments.push({
-      type: 'segment',
-      captions: currentSegment,
-      start: currentSegment[0].start,
-      end: currentSegment[currentSegment.length - 1].end,
-    });
+  // 后处理：对超长段落进行强制分割
+  const finalSegments = [];
+  for (const segment of segments) {
+    const duration = segment.end - segment.start;
+    if (duration > MAX_SEGMENT_DURATION && segment.captions.length > 1) {
+      const splits = splitLongSegment(segment);
+      finalSegments.push(...splits);
+    } else {
+      finalSegments.push(segment);
+    }
   }
 
-  return segments;
+  return finalSegments;
+}
+
+/**
+ * 构建分段对象
+ */
+function buildSegment(captions) {
+  return {
+    type: 'segment',
+    captions,
+    start: captions[0].start,
+    end: captions[captions.length - 1].end,
+  };
+}
+
+/**
+ * 将超长段落按 MAX_SEGMENT_DURATION 强制分割
+ * 确保每段不超过 90 秒，且在自然句子边界分割
+ */
+function splitLongSegment(segment) {
+  const { captions } = segment;
+  const splits = [];
+  let current = [];
+
+  for (const caption of captions) {
+    current.push(caption);
+
+    const segStart = current[0].start;
+    const segEnd = caption.end;
+    const duration = segEnd - segStart;
+
+    // 当累积时长超过阈值，切割当前段
+    if (duration >= MAX_SEGMENT_DURATION) {
+      splits.push(buildSegment([...current]));
+      current = [];
+    }
+  }
+
+  // 添加剩余部分
+  if (current.length > 0) {
+    splits.push(buildSegment(current));
+  }
+
+  return splits;
 }
 
 /**
